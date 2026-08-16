@@ -18,6 +18,7 @@ import numpy as np
 import ray
 from gymnasium import spaces
 
+
 from core.adaptors.ray.schema import RaySchema
 from core.callbacks import log_and_report_episode_metrics, tag_episode_with_env_idx
 from core.optimizers.appo.config import APPOptimizerConfig
@@ -25,10 +26,17 @@ from core.optimizers.bilevel import BilevelConfig
 from core.optimizers.es.config import ESConfig
 from core.optimizers.es.schema import ESSchema
 from core.reporting.wandb import WandbConfig
-from examples.bilevel_fishery import queries
-from examples.bilevel_fishery.mechanism_v1 import FisheryMechanismSpace
 from examples.bilevel_fishery.metric_schema import FisheryMetricSchema
-from examples.bilevel_fishery.regulated_env_shaefer import FisheryRegulatedEnv
+from core.callbacks import tag_episode_with_env_idx
+from core.mechanism.algorithms.quota import QuotaMechanism
+from core.mechanism.algorithms.social_influence import SocialInfluenceMechanism
+from core.mechanism.algorithms.subsidy import SubsidyMechanism
+from core.mechanism.algorithms.threhold_penalty import ThresholdPenaltyMechanism
+from core.mechanism.composition.chained_mechanism import ChainedMechanism
+from core.optimizers.bilevel import BilevelConfig
+from core.optimizers.es.config import ESConfig
+from core.optimizers.appo.config import APPOptimizerConfig
+from examples.bilevel_fishery.regulated_env import FisheryRegulatedEnv
 from examples.bilevel_fishery.regulator_env import FisheryRegulatorEnv
 from examples.bilevel_fishery.queries import (
     ES_QUERIES,
@@ -37,6 +45,8 @@ from examples.bilevel_fishery.queries import (
 )
 
 ray.shutdown()
+
+EPS = 1e-8
 
 bilevel_opt_cfg: BilevelConfig = (
     BilevelConfig()
@@ -52,18 +62,50 @@ bilevel_opt_cfg: BilevelConfig = (
         )
     )
     .mechanism(
-        # TODO adding defaults
-        space=FisheryMechanismSpace(
-            optimize_params=[
-                "fixed_quota",
-                "restoration_subsidy",
-            ],
-            default_fixed_quota=0.56224,  # 0.90 #0.52
-            default_max_demand_frac=1.0,
-            default_restoration_subsidy=0.10,
-            default_fine_amount=0.20,
-            default_risk_penalty_scale=0.0,  # 1.0
-            default_risk_penalty_power=1.0,
+        mechanism = ChainedMechanism(
+            children=(
+                QuotaMechanism(
+                    action_component=0,
+                    bindings={
+                        "resource_level": lambda env: (
+                            env.S_t["fish"] / max(env.K, EPS)
+                        ),
+                    },
+                    optimize_params=["fixed_quota"],
+                    default_fixed_quota=0.56224, #0.90 #0.52
+                    default_max_demand_frac=1.0,
+                    default_fine_amount=0.20, 
+                    default_risk_penalty_scale=0.0, #1.0
+                    default_risk_penalty_power=1.0,
+
+                ),
+                SubsidyMechanism(
+                    action_component=1,
+                    optimize_params=["restoration_subsidy"],
+                    default_restoration_subsidy=0.10,
+                ),
+                ThresholdPenaltyMechanism(
+                    threshold=0.20,
+                    penalty_amount=0.10,
+                    transition_width=0.03,
+                    bindings={
+                        "resource_level": lambda env: (
+                            env.S_t["fish"] / max(env.K, EPS)
+                        ),
+                    },
+                ),
+                SocialInfluenceMechanism(
+                    influence_weight=...,
+                    bindings={
+                        "previous_actions": lambda env: (
+                            env.previous_actions
+                        ),
+                        "agent_ids": lambda env: (
+                            tuple(env.agents)
+                        ),
+                    },
+                )
+            )
         )
     )
     .training(outer_iters=1000)
@@ -140,14 +182,6 @@ bilevel_opt_cfg: BilevelConfig = (
                     "sigma": 0.02,
                     "initial_stock_log_sigma": 0.05,
                     "unregulated_f_multiplier": 2.0,
-                    "collapse_stock_frac": 0.20,
-                    "collapse_transition_width": 0.03,
-                    "quota_transition_width": 0.05,
-                    "harvest_transition_width": 0.005,
-                    "violation_transition_width": 0.03,
-                    # restorative
-                    "restoration_effectiveness": 0.02,
-                    "restoration_effort_cost": 0.25,
                 },
                 "seed": 0,
             },
@@ -217,7 +251,7 @@ bilevel_opt_cfg: BilevelConfig = (
                     "action_space": spaces.Box(
                         low=-np.inf,
                         high=np.inf,
-                        shape=(2,),
+                        shape=(2,), # TODO action shape must match the mechanism space components -> dynamically initiate this
                         dtype=np.float32,
                     ),
                 }
