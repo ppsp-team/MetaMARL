@@ -5,9 +5,7 @@ optimizers and the environments (``ContextID``, ``OptimizerID``) and the
 container types exchanged with RLlib (``EnvType``, ``EnvConfigDict``). They
 carry no runtime behaviour.
 """
-
-from typing import TypeAlias, Union
-
+from typing import Any, Hashable, TypeAlias, Union
 from gymnasium import Env
 from ray.rllib.env.base_env import BaseEnv
 from ray.rllib.env.multi_agent_env import MultiAgentEnv
@@ -60,3 +58,9 @@ EnvConfigDict: TypeAlias = dict
 Represents the env_config sub-dict of the algo config that is passed to
 the env constructor.
 """
+
+AgentID = Hashable
+"""Represents a generic identifier for an agent (e.g., "agent1")."""
+
+MultiAgentDict = dict[AgentID, Any]
+"""A dict keyed by agent ids, e.g. {"agent-1": value}."""
