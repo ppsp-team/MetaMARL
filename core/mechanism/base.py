@@ -9,58 +9,92 @@ when no semantic mechanism class is available. The geometry of the mechanism
 manifold (encoding, decoding, clipping, sampling) lives in
 :mod:`core.mechanism.space`.
 """
+from abc import ABC, abstractmethod
+from typing import Any, Callable, Self
 
-from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from core.types import MultiAgentDict
 
 import numpy as np
 
-
-@runtime_checkable
-class Mechanism(Protocol):
+class Mechanism(ABC):
     """Semantic representation of a regulatory mechanism."""
 
-    def to_vector(self) -> list[float]:
-        """Convert semantic mechanism to normalized vector in [0,1]^d."""
+    bindings: dict[str, Callable[[Any], Any]]
 
+    @property
+    @abstractmethod
+    def dimension(self) -> int:
+        """Dimension of this mechanism in optimizer space."""
         ...
 
-    def param_names(self) -> list[str]:
-        """Names corresponding exactly to the entries of :meth:`to_vector`."""
-
+    @abstractmethod
+    def encode(self) -> np.ndarray:
+        """Encode this mechanism into its normalized optimizer representation.""" 
         ...
 
-    @classmethod
-    def default(cls) -> "Mechanism":
-        """Return the mechanism in force before the optimizer publishes a candidate."""
+    @abstractmethod
+    def decode(self, x: np.ndarray) -> Self: 
+        """
+        Return the same mechanism structure parameterized by x.
 
+        For composite mechanisms, decoding propagates recursively to children.
+        """
         ...
 
+    @abstractmethod
+    def clip(self) -> Self: 
+        ...
 
-@dataclass(frozen=True)
-class VectorMechanism(Mechanism):
-    """Mechanism whose only content is a raw parameter vector.
+    @abstractmethod
+    def param_names(self) -> list[str]: 
+        """Names corresponding exactly to encode()."""
+        ...
 
-    When to use: benchmarks that have no semantic mechanism class and let the
-    optimizer act directly on ``[0, 1]^d`` vectors;
-    :class:`core.envs.regulator.RegulatorEnv` wraps optimizer outputs in it
-    when no mechanism space is configured.
+    @abstractmethod
+    def to_vector(self) -> np.ndarray:
+        """Full semantic representation exposed to agents."""
+        ...
 
-    Parameters
-    ----------
-    x : np.ndarray
-        Parameter vector, shape ``(d,)``, normalized floats.
-    """
+    def _validate(self, x: np.ndarray) -> np.ndarray:
+        x = np.asarray(x, dtype=np.float32)
 
-    x: np.ndarray
+        if x.shape != (self.dimension,):
+            raise ValueError(f"Expected shape ({self.dimension},), got {x.shape}")
 
-    def to_vector(self) -> list[float]:
-        """Return ``x`` flattened as a list of ``float32`` values."""
+        if not np.isfinite(x).all():
+            raise ValueError(f"Non-finite values in vector: {x}")
 
-        return np.asarray(self.x, dtype=np.float32).ravel().tolist()
+        return x
 
-    @classmethod
-    def from_vector(cls, v: list[float]) -> "VectorMechanism":
-        """Build a ``VectorMechanism`` from any array-like of floats."""
 
-        return cls(np.asarray(v, dtype=np.float32))
+    def resolve(
+        self,
+        env: Any, #TODO env should not be any
+    ) -> dict[str, Any]:
+        bindings = getattr(self, "bindings", {})
+        return {name: binding(env) for name, binding in bindings.items()}
+
+
+    def action(
+            self,
+            action_dict: MultiAgentDict,
+            **kwargs,
+    ) -> MultiAgentDict:
+        """Transform agent actions."""
+        return action_dict
+
+    def observation(
+            self,
+            observation_dict: MultiAgentDict,
+            **kwargs,
+    ) -> MultiAgentDict:
+        """Transform agent observations."""
+        return observation_dict
+
+    def reward(
+            self,
+            reward_dict: MultiAgentDict,
+            **kwargs,
+    ) -> MultiAgentDict:
+        """Transform agent rewards."""
+        return reward_dict
