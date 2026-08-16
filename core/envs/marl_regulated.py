@@ -186,6 +186,7 @@ class MultiAgentRegulatedEnv(MultiAgentEnv):
         for agent_id, value in values.items():
             self._infos[agent_id][key] = value
 
+    # TODO make this configurable in future
     def _normalize_action(
         self,
         action: ActType,
