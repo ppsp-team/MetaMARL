@@ -17,20 +17,18 @@ from core.utils import (
 EPS = 1e-8
 
 
+# TODO what if two mechanisms interfere by requiring context from each other ? 
+# for example a penalty based on how much quota is violated ?
 @dataclass(frozen=True)
 class QuotaMechanism(Mechanism):
     fixed_quota: float
-    max_usage_frac: float
-    fine_amount: float
-    risk_penalty_scale: float
-    risk_penalty_power: float
+    fine_amount: float #TODO remove. technically this is a penaltymechanism
 
     # NOTE why reinstantiate in subclass ?
     bindings: dict[str, Callable[[Any], Any]] = field(
         repr=False,
         compare=False,
     )
-
     action_component: int = 0
 
     # Fixed algorithmic parameters.
@@ -52,10 +50,7 @@ class QuotaMechanism(Mechanism):
         if missing: raise ValueError(f"Missing quota bindings: {missing}")
 
         assert 0.0 <= self.fixed_quota <= 1.0
-        assert 0.0 <= self.max_usage_frac <= 1.0
         assert 0.0 <= self.fine_amount <= 1.0
-        assert 0.0 <= self.risk_penalty_scale <= 1.0
-        assert 1.0 <= self.risk_penalty_power <= 5.0
 
         assert self.quota_transition_width > 0.0
         assert self.usage_transition_width > 0.0
@@ -65,10 +60,7 @@ class QuotaMechanism(Mechanism):
         return np.array(
             [
                 self.fixed_quota,
-                self.max_usage_frac,
                 self.fine_amount,
-                self.risk_penalty_scale,
-                (self.risk_penalty_power - 1.0) / 4.0,
             ],
             dtype=np.float32,
         )
@@ -76,7 +68,6 @@ class QuotaMechanism(Mechanism):
     def param_names(self) -> list[str]:
         return [
             "fixed_quota",
-            "max_usage_frac",
             "fine_amount",
             "risk_penalty_scale",
             "risk_penalty_power",
@@ -87,19 +78,6 @@ class QuotaMechanism(Mechanism):
             "effective_quota",
         ]
 
-
-    def _allowed_fraction(
-        self,
-        resource_level: float,
-    ) -> float:
-        resource_level = float(np.clip(resource_level, 0.0, 1.0,))
-        width = max(self.quota_transition_width, EPS)
-        lower = sigmoid((0.0 - self.fixed_quota) / width)
-        upper = sigmoid((1.0 - self.fixed_quota) / width)
-        current = sigmoid((resource_level - self.fixed_quota) / width)
-        return (current - lower) / max(upper - lower, EPS) * self.max_usage_frac
-
-
     # TODO action needs to know about #1 current resource level and #2 full required
     # TODO we assume prior normalizaiton of action space 
     # TODO we assume prior selection of action component.
@@ -109,7 +87,14 @@ class QuotaMechanism(Mechanism):
         action_dict: MultiAgentDict,
         **kwargs,
     ) -> MultiAgentDict:
-        allowed_frac = self._allowed_fraction(kwargs["resource_level"])
+        resource_level = kwargs["resource_level"]
+
+        width = max(self.quota_transition_width, EPS)
+        lower = sigmoid((0.0 - self.fixed_quota) / width)
+        upper = sigmoid((1.0 - self.fixed_quota) / width)
+        current = sigmoid((resource_level - self.fixed_quota) / width)
+
+        allowed_frac = (current - lower) / max(upper - lower, EPS)
         requested = {}
         regulated = {}
 
@@ -137,27 +122,18 @@ class QuotaMechanism(Mechanism):
         **kwargs,
     ) -> MultiAgentDict:
         requested = self._context["requested_action_dict"]
-        delivered = self._context["delivered_action_dict"]
         resource_level = kwargs["resource_level"]
         allowed_frac = self._allowed_fraction(resource_level)
-        resource_pressure = max(0.0, 1.0 - resource_level)
 
         regulated = {}
         for agent_id, reward in reward_dict.items():
             requested_frac = requested[agent_id][self.action_component]
-            delivered_frac = delivered[agent_id][self.action_component]
             violation_frac = smooth_positive_zero_at_origin(
                 requested_frac - allowed_frac,
                 self.violation_transition_width,
             )
             quota_penalty = min(1.0, self.fine_amount * violation_frac)
-            risk_penalty = (
-                self.risk_penalty_scale
-                * resource_pressure
-                * delivered_frac
-                ** self.risk_penalty_power
-            )
-            regulated[agent_id] = reward - min(1.0, quota_penalty + risk_penalty)
+            regulated[agent_id] = reward - min(1.0, quota_penalty)
         return regulated
 
 
