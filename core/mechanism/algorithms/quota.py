@@ -22,7 +22,6 @@ EPS = 1e-8
 @dataclass(frozen=True)
 class QuotaMechanism(Mechanism):
     fixed_quota: float
-    fine_amount: float #TODO remove. technically this is a penaltymechanism
 
     # NOTE why reinstantiate in subclass ?
     bindings: dict[str, Callable[[Any], Any]] = field(
@@ -50,33 +49,18 @@ class QuotaMechanism(Mechanism):
         if missing: raise ValueError(f"Missing quota bindings: {missing}")
 
         assert 0.0 <= self.fixed_quota <= 1.0
-        assert 0.0 <= self.fine_amount <= 1.0
-
         assert self.quota_transition_width > 0.0
         assert self.usage_transition_width > 0.0
         assert self.violation_transition_width > 0.0
 
     def to_vector(self) -> np.ndarray:
-        return np.array(
-            [
-                self.fixed_quota,
-                self.fine_amount,
-            ],
-            dtype=np.float32,
-        )
+        return np.array([self.fixed_quota], dtype=np.float32)
 
     def param_names(self) -> list[str]:
-        return [
-            "fixed_quota",
-            "fine_amount",
-            "risk_penalty_scale",
-            "risk_penalty_power",
-        ]
+        return ["fixed_quota"]
 
     def observation_names(self) -> list[str]:
-        return [
-            "effective_quota",
-        ]
+        return ["effective_quota"]
 
     # TODO action needs to know about #1 current resource level and #2 full required
     # TODO we assume prior normalizaiton of action space 
@@ -95,6 +79,8 @@ class QuotaMechanism(Mechanism):
         current = sigmoid((resource_level - self.fixed_quota) / width)
 
         allowed_frac = (current - lower) / max(upper - lower, EPS)
+        self._context["allowed_frac"] = allowed_frac
+
         requested = {}
         regulated = {}
 
@@ -115,39 +101,19 @@ class QuotaMechanism(Mechanism):
         self._context["delivered_action_dict"] = regulated
         return regulated
 
-    @override(Mechanism)
-    def reward(
-        self,
-        reward_dict: MultiAgentDict,
-        **kwargs,
-    ) -> MultiAgentDict:
-        requested = self._context["requested_action_dict"]
-        resource_level = kwargs["resource_level"]
-        allowed_frac = self._allowed_fraction(resource_level)
 
-        regulated = {}
-        for agent_id, reward in reward_dict.items():
-            requested_frac = requested[agent_id][self.action_component]
-            violation_frac = smooth_positive_zero_at_origin(
-                requested_frac - allowed_frac,
-                self.violation_transition_width,
-            )
-            quota_penalty = min(1.0, self.fine_amount * violation_frac)
-            regulated[agent_id] = reward - min(1.0, quota_penalty)
-        return regulated
-
-
+    # TODO this can be potentially removed
     @override(Mechanism)
     def observation(
         self,
         observation_dict: MultiAgentDict,
         **kwargs,
     ) -> MultiAgentDict:
-        resource_level = kwargs["resource_level"]
-        effective_quota = self._allowed_fraction(resource_level)
+        if "allowed_frac" not in self._context:
+            return observation_dict
         return {
             agent_id: np.concatenate(
-                [observation, np.array([effective_quota], dtype=np.float32)]
+                [observation, np.array([self._context["allowed_frac"]], dtype=np.float32)]
             )
             for agent_id, observation in observation_dict.items()
         }
