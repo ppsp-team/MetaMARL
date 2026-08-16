@@ -19,25 +19,13 @@ class SocialInfluenceMechanism(Mechanism):
         agent_ids = kwargs["agent_ids"]
 
         regulated = {}
-
         for agent_id, observation in observation_dict.items():
             peer_actions = [
-                np.asarray(
-                    previous_actions[other_id],
-                    dtype=np.float32,
-                ).reshape(-1)
-                for other_id in agent_ids
-                if other_id != agent_id
+                np.asarray(previous_actions[other_id], dtype=np.float32).reshape(-1)
+                for other_id in agent_ids if other_id != agent_id
             ]
-
             regulated[agent_id] = np.concatenate(
-                [
-                    observation,
-                    *peer_actions,
-                ]
-            ).astype(
-                np.float32,
-                copy=False,
-            )
+                [observation, *peer_actions]
+            ).astype(np.float32,copy=False,)
 
         return regulated
