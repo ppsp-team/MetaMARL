@@ -31,7 +31,7 @@ from core.callbacks import tag_episode_with_env_idx
 from core.mechanism.algorithms.quota import QuotaMechanism
 from core.mechanism.algorithms.social_influence import SocialInfluenceMechanism
 from core.mechanism.algorithms.subsidy import SubsidyMechanism
-from core.mechanism.algorithms.threhold_penalty import ThresholdPenaltyMechanism
+from core.mechanism.algorithms.penalty import ThresholdPenaltyMechanism
 from core.mechanism.composition.chained_mechanism import ChainedMechanism
 from core.optimizers.bilevel import BilevelConfig
 from core.optimizers.es.config import ESConfig
@@ -74,25 +74,12 @@ bilevel_opt_cfg: BilevelConfig = (
                     optimize_params=["fixed_quota"],
                     default_fixed_quota=0.56224, #0.90 #0.52
                     default_max_demand_frac=1.0,
-                    default_fine_amount=0.20, 
-                    default_risk_penalty_scale=0.0, #1.0
-                    default_risk_penalty_power=1.0,
 
                 ),
                 SubsidyMechanism(
                     action_component=1,
                     optimize_params=["restoration_subsidy"],
                     default_restoration_subsidy=0.10,
-                ),
-                ThresholdPenaltyMechanism(
-                    threshold=0.20,
-                    penalty_amount=0.10,
-                    transition_width=0.03,
-                    bindings={
-                        "resource_level": lambda env: (
-                            env.S_t["fish"] / max(env.K, EPS)
-                        ),
-                    },
                 ),
                 SocialInfluenceMechanism(
                     influence_weight=...,
@@ -280,3 +267,15 @@ bilevel_opt = bilevel_opt_cfg.build_optimizer()
 
 bilevel_opt.run()
 ray.shutdown()
+
+
+# #                 ThresholdPenaltyMechanism(
+#                     threshold=0.20,
+#                     penalty_amount=0.10,
+#                     transition_width=0.03,
+#                     bindings={
+#                         "resource_level": lambda env: (
+#                             env.S_t["fish"] / max(env.K, EPS)
+#                         ),
+#                     },
+#                 ),
