@@ -17,7 +17,6 @@ from core.world.context import (
 )
 
 EPS = 1e-8
-
 logger = logging.getLogger(__name__)
 
 
@@ -37,19 +36,19 @@ class WaterRegulatorRavenEnv(RegulatorEnv):
         **kwargs,
     ):
         super().__init__(**kwargs)
+
         env_cfg = ecology_cfg or {}
         self.sustainability_weight = env_cfg.get("sus_weight", 5.0)
         self.sustainability_threshold = env_cfg.get("sus_threshold", 0.2)
         self.max_water = env_cfg.get("max_water", 100.0)
+
         # Denormalized threshold for visualization
         self.raw_sustainability_threshold = (
             self.sustainability_threshold * self.max_water
         )
         self.trajectories: dict[int, list[dict[str, Any]]] = {}
-
         self.economic_weight = env_cfg.get("economic_weight", 1.0)
         self.sustainability_weight = env_cfg.get("sustainability_weight", 1.0)
-
         target_status = env_cfg.get("aggregation_status", "train")
         self.aggregation_status = MechanismStatus(target_status)
 
@@ -71,8 +70,10 @@ class WaterRegulatorRavenEnv(RegulatorEnv):
             if isinstance(ctx.payload, EnvStepContext)
             and ctx.payload.status == self.aggregation_status
         ]
+
         if not step_ctxs:
             logger.warning("[Regulator] No EnvStepContext received")
+
             return []
 
         by_run: dict[tuple[int, int], list[Context]] = defaultdict(list)
@@ -81,6 +82,7 @@ class WaterRegulatorRavenEnv(RegulatorEnv):
         # for now we assume aggregation over seed
         for ctx in step_ctxs:
             s = ctx.payload
+
             by_run[(s.mechanism, s.seed)].append(ctx)
 
         economic_by_m: dict[int, list[float]] = defaultdict(list)
@@ -90,17 +92,21 @@ class WaterRegulatorRavenEnv(RegulatorEnv):
         for (m_idx, seed), steps in by_run.items():
             steps = sorted(steps, key=lambda c: c.step)
             rewards = []
+
             for ctx in steps:
                 r = ctx.payload.reward
+
                 # TODO for now we average accross agents but later another solution required!
                 if isinstance(r, dict):
                     rewards.append(float(np.mean(list(r.values()))))
                 else:
                     rewards.append(float(r))
+
             economic_score = float(np.mean(rewards))
             deviation = compute_streamflow_deviation_from_step_ctx(
                 steps[-1].payload, streamflow_col="Belwood_Lake (res. inflow) [m3/s]"
             )["streamflow_deviation"]
+
             economic_by_m[m_idx].append(economic_score)
             deviation_by_m[m_idx].append(deviation)
             seeds_by_m[m_idx].append(seed)
@@ -156,7 +162,6 @@ def read_hydrograph_series(
 
         for row in reader:
             row = {k.strip(): v for k, v in row.items()}
-
             date = (
                 row.get("date") or row.get("Date") or row.get("time") or row.get("Time")
             )
@@ -169,11 +174,13 @@ def read_hydrograph_series(
                     (k for k in row if k.strip() == column_name.strip()),
                     None,
                 )
+
                 if match is None:
                     raise KeyError(
                         f"Column '{column_name}' not found in {csv_path}. "
                         f"Available columns: {list(row.keys())}"
                     )
+
                 column_name = match
 
             raw = row[column_name]
@@ -194,12 +201,10 @@ def compute_streamflow_deviation(
         output_dir=mechanism_output_dir,
         column_name=streamflow_col,
     )
-
     q_0 = read_hydrograph_series(
         output_dir=baseline_output_dir,
         column_name=streamflow_col,
     )
-
     common_dates = sorted(set(q_m) & set(q_0))
 
     if not common_dates:
@@ -217,18 +222,12 @@ def compute_streamflow_deviation_from_step_ctx(
     streamflow_col: str = "West_Montrose [m3/s]",
 ) -> dict[str, float]:
     first_agent_info = next(iter(payload.info.values()))
-
     baseline_output_dir = first_agent_info["baseline_ref"]
-
     baseline_path = Path(baseline_output_dir)
-
     prepared_runs_dir = baseline_path.parents[1]
     baseline_run_name = baseline_path.parents[0].name
-
     mechanism_run_name = baseline_run_name.replace("baseline_", "", 1)
-
     mechanism_output_dir = prepared_runs_dir / mechanism_run_name / "3_Model_output"
-
     deviation = compute_streamflow_deviation(
         mechanism_output_dir=str(mechanism_output_dir),
         baseline_output_dir=baseline_output_dir,
