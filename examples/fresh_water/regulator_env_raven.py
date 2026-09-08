@@ -1,6 +1,6 @@
+import csv
 import logging
 from collections import defaultdict
-import csv
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +15,6 @@ from core.world.context import (
     MechanismContext,
     MechanismStatus,
 )
-from examples.fresh_water.contexts import FitnessContext
 
 EPS = 1e-8
 
@@ -43,7 +42,9 @@ class WaterRegulatorRavenEnv(RegulatorEnv):
         self.sustainability_threshold = env_cfg.get("sus_threshold", 0.2)
         self.max_water = env_cfg.get("max_water", 100.0)
         # Denormalized threshold for visualization
-        self.raw_sustainability_threshold = self.sustainability_threshold * self.max_water
+        self.raw_sustainability_threshold = (
+            self.sustainability_threshold * self.max_water
+        )
         self.trajectories: dict[int, list[dict[str, Any]]] = {}
 
         self.economic_weight = env_cfg.get("economic_weight", 1.0)
@@ -73,11 +74,11 @@ class WaterRegulatorRavenEnv(RegulatorEnv):
         if not step_ctxs:
             logger.warning("[Regulator] No EnvStepContext received")
             return []
-    
+
         by_run: dict[tuple[int, int], list[Context]] = defaultdict(list)
 
         # TODO group by seed as well
-            # for now we assume aggregation over seed
+        # for now we assume aggregation over seed
         for ctx in step_ctxs:
             s = ctx.payload
             by_run[(s.mechanism, s.seed)].append(ctx)
@@ -98,13 +99,11 @@ class WaterRegulatorRavenEnv(RegulatorEnv):
                     rewards.append(float(r))
             economic_score = float(np.mean(rewards))
             deviation = compute_streamflow_deviation_from_step_ctx(
-                steps[-1].payload,
-                streamflow_col="Belwood_Lake (res. inflow) [m3/s]"
+                steps[-1].payload, streamflow_col="Belwood_Lake (res. inflow) [m3/s]"
             )["streamflow_deviation"]
             economic_by_m[m_idx].append(economic_score)
             deviation_by_m[m_idx].append(deviation)
             seeds_by_m[m_idx].append(seed)
-            
 
         # TODO take into consideration economic vs susteinability reward
         max_idx = max(economic_by_m.keys())
@@ -126,7 +125,7 @@ class WaterRegulatorRavenEnv(RegulatorEnv):
                     env_id=self.env_id,
                     seed=seed,
                     status=MechanismStatus.done,
-                    mechanism=None, #TODO add the mechanism object
+                    mechanism=None,  # TODO add the mechanism object
                     metrics={
                         "objective": objective,
                         "economic_score": mean_economic,
@@ -159,10 +158,7 @@ def read_hydrograph_series(
             row = {k.strip(): v for k, v in row.items()}
 
             date = (
-                row.get("date")
-                or row.get("Date")
-                or row.get("time")
-                or row.get("Time")
+                row.get("date") or row.get("Date") or row.get("time") or row.get("Time")
             )
 
             if date is None:
@@ -214,6 +210,7 @@ def compute_streamflow_deviation(
 
     return numerator / max(EPS, denominator)
 
+
 def compute_streamflow_deviation_from_step_ctx(
     payload,
     *,
@@ -230,11 +227,7 @@ def compute_streamflow_deviation_from_step_ctx(
 
     mechanism_run_name = baseline_run_name.replace("baseline_", "", 1)
 
-    mechanism_output_dir = (
-        prepared_runs_dir
-        / mechanism_run_name
-        / "3_Model_output"
-    )
+    mechanism_output_dir = prepared_runs_dir / mechanism_run_name / "3_Model_output"
 
     deviation = compute_streamflow_deviation(
         mechanism_output_dir=str(mechanism_output_dir),
