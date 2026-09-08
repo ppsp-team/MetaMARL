@@ -1,3 +1,19 @@
+"""Bilevel fishery experiment with the typed metrics/reporting stack.
+
+The outer Evolution Strategies optimizer searches ``fixed_quota`` and
+``restoration_subsidy``; the inner APPO optimizer trains the fishers against
+each candidate. Every level logs a typed ``MetricSchema`` and renders the
+queries of :mod:`examples.bilevel_fishery.queries` through the configured
+reporter (Weights & Biases by default, CSV with ``--reporter csv``).
+
+Smoke configuration::
+
+    WANDB_MODE=offline uv run python -m examples.bilevel_fishery.debug \\
+        --outer-iters 2 --train-iters 2 --num-agents 2 --horizon 20
+
+Full configuration: the defaults.
+"""
+
 import numpy as np
 import ray
 from gymnasium import spaces
@@ -9,6 +25,7 @@ from core.optimizers.bilevel import BilevelConfig
 from core.optimizers.es.config import ESConfig
 from core.optimizers.es.schema import ESSchema
 from core.reporting.wandb import WandbConfig
+from examples.bilevel_fishery import queries
 from examples.bilevel_fishery.mechanism_v1 import FisheryMechanismSpace
 from examples.bilevel_fishery.metric_schema import FisheryMetricSchema
 from examples.bilevel_fishery.regulated_env_shaefer import FisheryRegulatedEnv
@@ -226,6 +243,6 @@ bilevel_opt_cfg: BilevelConfig = (
 )
 
 bilevel_opt = bilevel_opt_cfg.build_optimizer()
-bilevel_opt.run()
 
+bilevel_opt.run()
 ray.shutdown()
