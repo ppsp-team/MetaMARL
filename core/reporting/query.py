@@ -1,3 +1,16 @@
+"""Declarative selection of metric series to report.
+
+A :class:`Query` names an x path and one or several y paths inside a
+``MetricSchema`` tree. Paths are tuples of field names; at a *dynamic* node
+(``dict[ID, MetricSchema]``) a component may be the wildcard ``"*"``, which
+expands to every runtime key in sorted order::
+
+    Query(title="Fish biomass by mechanism",
+          x=("iter",),
+          y=("train", "rollout", "by_mechanism", "*", "by_seed", "*", "fish_norm"),
+          reduce="mean", error="std")
+"""
+
 from dataclasses import dataclass
 from typing import Literal, Optional, TypeAlias, cast
 
