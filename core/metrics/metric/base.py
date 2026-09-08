@@ -1,3 +1,11 @@
+"""Abstract accumulator behind every metric schema leaf.
+
+A ``Metric`` receives raw values through ``push``, exposes them without
+side effects through ``peek`` and collapses them through ``reduce`` according
+to its protocol (mean, sum, ...). ``compile=False`` returns the raw history or a
+copy of the metric instead of the compiled scalar.
+"""
+
 from __future__ import annotations
 
 # TODO what is an ABCMeta
@@ -9,24 +17,39 @@ PrimitiveType: TypeAlias = Union[int, float, bool, str]
 
 
 class Metric(ABC):
+    """Accumulator of primitive values behind one schema field.
+
+    Each subclass implements one reduction protocol (see
+    :class:`~core.metrics.enums.ReduceProtocol`). ``float()`` and ``int()``
+    on a metric return its compiled value and raise ``ValueError`` when that
+    value is a list.
+    """
+
     @abstractmethod
     def __len__(self) -> int:
         """Returns the length of the internal values list."""
+
         ...
 
     def __float__(self):
         value = self.peek(compile=True)
+
         if isinstance(value, (list)):  # , tuple, deque
             raise ValueError(f"Can not convert {self} to float.")
+
         return float(value)
 
     def __int__(self):
         value = self.peek(compile=True)
+
         if isinstance(value, (list)):
             raise ValueError(f"Can not convert {self} to int.")
+
         return int(value)
 
     def empty_copy(self) -> Self:
+        """Return a fresh, empty metric of the same class."""
+
         return type(self)()
 
     @abstractmethod
@@ -67,7 +90,13 @@ class Metric(ABC):
         """
 
     @abstractmethod
-    def push(self, value: PrimitiveType) -> None: ...
+    def push(self, value: PrimitiveType) -> None:
+        """Append one value to the internal history."""
+
+        ...
 
     @abstractmethod
-    def flush(self) -> None: ...
+    def flush(self) -> None:
+        """Discard every accumulated value."""
+
+    ...

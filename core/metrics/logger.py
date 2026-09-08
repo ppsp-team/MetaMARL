@@ -1,3 +1,19 @@
+"""Typed metric accumulation driven by pydantic schemas.
+
+A ``MetricSchema`` declares *what* is logged: each field is a leaf metric whose
+reducer comes from ``Field(json_schema_extra={"reduce": ReduceProtocol.X})``
+(MEAN by default), a nested ``MetricSchema`` is a static sub-tree, and a
+``dict[ID, MetricSchema]`` is a *dynamic* node whose children are created on
+first use (one per agent, policy, candidate, ...). :class:`MetricLogger` builds
+the matching tree of :class:`~core.metrics.metric.base.Metric` objects,
+accumulates values through :meth:`~MetricLogger.push` / :meth:`~MetricLogger.push_data`,
+and returns populated schema instances through :meth:`~MetricLogger.peek`
+(non-destructive, raw histories) or :meth:`~MetricLogger.reduce` (destructive,
+reduced values). Pushing a *subclass* of a declared schema specializes that
+sub-tree at runtime, which is how an ES logger ends up holding the concrete
+RLlib and environment schemas of the inner level.
+"""
+
 from __future__ import annotations
 
 from abc import ABC
@@ -14,6 +30,14 @@ Path: TypeAlias = tuple[str, ...]
 
 
 class Node(dict[str, "Node | Metric"]):
+    """One level of the metric tree built from a ``MetricSchema``.
+
+    A node maps field names (or runtime ids for a *dynamic* node) to child
+    nodes or :class:`Metric` leaves. ``schema`` is the pydantic class that the
+    node rebuilds in :meth:`construct`; ``dynamic`` marks a
+    ``dict[ID, MetricSchema]`` field whose children are created on first push.
+    """
+
     schema: type[MetricSchema]
     dynamic: bool = False
     subtree_reduce: ReduceProtocol | None = None
@@ -32,7 +56,20 @@ class Node(dict[str, "Node | Metric"]):
         self.dynamic = dynamic
         self.subtree_reduce = subtree_reduce
 
-    def construct(self, data: dict[str, Any]):
+    def construct(self, data: dict[str, Any]) -> MetricSchema | dict[str, Any]:
+        """Rebuild a schema instance from values laid out like this node.
+
+        ``data`` mirrors the node: one entry per child, holding either a leaf
+        value or the nested dictionary of a child node. A dynamic node returns
+        a plain ``dict`` keyed by runtime id; a static node returns
+        ``schema.model_construct(**values)``, so no pydantic validation runs.
+
+        Raises
+        ------
+        RuntimeError
+            If a static node was built without a schema.
+        """
+
         if self.dynamic:
             return {
                 dynamic_id: child.construct(data[dynamic_id])
@@ -56,6 +93,18 @@ class Node(dict[str, "Node | Metric"]):
 
 
 class MetricLogger(ABC):
+    """Tree of metric accumulators mirroring a ``MetricSchema``.
+
+    Build one with :meth:`from_schema` (direct instantiation raises
+    ``TypeError``), feed it with :meth:`push` (one path) or :meth:`push_data`
+    (a whole schema instance), then read it back with :meth:`peek` (raw
+    histories, non-destructive) or :meth:`reduce` (reduced values, clears the
+    accumulators). The logger is the second layer of the reporting stack:
+    ``MetricSchema`` declares, ``MetricLogger`` accumulates,
+    :class:`~core.reporting.query.Query` selects and
+    :class:`~core.reporting.base.Reporter` renders.
+    """
+
     _TOKEN: ClassVar[object] = object()
     _schema: type[MetricSchema]
     _refs: dict[Path, Metric]
@@ -68,6 +117,7 @@ class MetricLogger(ABC):
                 "MetricLogger cannot be instantiated directly. "
                 "Use MetricLogger.from_schema(schema)"
             )
+
         return super().__new__(cls)
 
     def __init__(self, *, _token: object | None = None) -> None:
@@ -80,12 +130,19 @@ class MetricLogger(ABC):
     # TODO immutability
     @classmethod
     def from_schema(cls, schema: type[MetricSchema]) -> "MetricLogger":
+        """Create a logger whose tree mirrors ``schema``.
+
+        This is the only supported constructor: it builds the ``Node`` tree and
+        the flat ``path -> Metric`` index that :meth:`push` looks up first.
+        """
+
         tree, refs = cls._build_from_schema(schema)
         self = cls.__new__(cls, _token=cls._TOKEN)
         self._schema = schema
         self._root = schema.__name__
         self._tree = tree
         self._refs = refs
+
         return self
 
     @classmethod
@@ -99,6 +156,7 @@ class MetricLogger(ABC):
     ) -> tuple[Node, dict[Path, Metric]]:
         # TODO guardrails when Metric isnt well formatted
         refs: dict[Path, Metric] = {}
+
         node = Node(schema=schema, dynamic=dynamic, subtree_reduce=subtree_reduce)
 
         for field_name, field in schema.__pydantic_fields__.items():
@@ -107,25 +165,28 @@ class MetricLogger(ABC):
 
             # Unwrap Optional[T] / T | None.
             args = get_args(ann)
+
             if type(None) in args:
                 non_none = tuple(arg for arg in args if arg is not type(None))
+
                 if len(non_none) == 1:
                     ann = non_none[0]
+
             extra = field.json_schema_extra or {}
             field_protocol = extra.get("reduce")
             field_override = extra.get("subtree_reduce")
-
-            reduce = (
-                subtree_reduce
-                if subtree_reduce is not None
-                else field_override
-            )
+            reduce = subtree_reduce if subtree_reduce is not None else field_override
 
             if isinstance(ann, type) and issubclass(ann, MetricSchema):
-                child, child_ref = cls._build_from_schema(ann, prefix=path, subtree_reduce=reduce)
+                child, child_ref = cls._build_from_schema(
+                    ann, prefix=path, subtree_reduce=reduce
+                )
+
                 if not node.dynamic:
                     node[field_name] = child
+
                     refs.update(child_ref)
+
                 continue
 
             # CASE WHEN dict[ID, MetricSchema]
@@ -139,7 +200,11 @@ class MetricLogger(ABC):
                         f"{schema.__name__}.{field_name} must be "
                         f"dict[ID, MetricSchema], got {ann!r}"
                     )
-                node[field_name] = Node(schema=value_ann, dynamic=True, subtree_reduce=reduce)
+
+                node[field_name] = Node(
+                    schema=value_ann, dynamic=True, subtree_reduce=reduce
+                )
+
                 continue
 
             protocol = (
@@ -148,6 +213,7 @@ class MetricLogger(ABC):
                 else field_protocol or ReduceProtocol.MEAN
             )
             metric = MetricFactory.create(protocol)
+
             if not node.dynamic:
                 node[field_name] = metric
                 refs[path] = metric
@@ -160,8 +226,10 @@ class MetricLogger(ABC):
         if node.dynamic:
             if index >= len(path):
                 raise KeyError(f"Expected dynamic ID at path: {path}")
+
             if node.schema is None:
                 raise RuntimeError(f"Dynamic node at {prefix} has no schema.")
+
             dynamic_id = path[index]
             prefix = prefix + (dynamic_id,)
             runtime_child = node.get(dynamic_id)
@@ -173,6 +241,7 @@ class MetricLogger(ABC):
                     subtree_reduce=node.subtree_reduce,
                 )
                 node[dynamic_id] = runtime_child
+
                 self._refs.update(refs)
 
             return self._resolve_path(
@@ -184,6 +253,7 @@ class MetricLogger(ABC):
 
         if index >= len(path):
             raise KeyError(f"Logger path does not point to a metric: {path}")
+
         field_name = path[index]
 
         try:
@@ -218,13 +288,17 @@ class MetricLogger(ABC):
                 raise TypeError(
                     f"Expected {self._schema.__name__}, got {type(data).__name__}."
                 )
+
             node = self._tree
 
         for field_name in type(data).model_fields:
             value = getattr(data, field_name)
+
             if value is None:
                 continue
+
             path = prefix + (field_name,)
+
             try:
                 child_node = node[field_name]
             except KeyError:
@@ -237,21 +311,28 @@ class MetricLogger(ABC):
                     raise TypeError(
                         f"Expected Node at {path}, got {type(child_node).__name__}."
                     )
+
                 runtime_schema = type(value)
                 declared_schema = child_node.schema
+
                 if declared_schema is None:
                     raise RuntimeError(f"Node at {path} has no declared schema.")
+
                 if runtime_schema is not declared_schema:
                     if not issubclass(runtime_schema, declared_schema):
                         raise TypeError(
                             f"{runtime_schema.__name__} is not a subclass of "
                             f"{declared_schema.__name__} at {path}."
                         )
+
                     subtree_reduce = child_node.subtree_reduce
                     child_node, refs = self._build_from_schema(
-                        runtime_schema, prefix=path, subtree_reduce=subtree_reduce,
+                        runtime_schema,
+                        prefix=path,
+                        subtree_reduce=subtree_reduce,
                     )
                     node[field_name] = child_node
+
                     self._refs.update(refs)
 
                 self.push_data(value, prefix=path, node=child_node)
@@ -260,6 +341,7 @@ class MetricLogger(ABC):
             if isinstance(value, dict):
                 if not isinstance(child_node, Node) or not child_node.dynamic:
                     raise TypeError(f"Expected dynamic Node at {path}.")
+
                 declared_schema = child_node.schema
 
                 if declared_schema is None:
@@ -294,14 +376,13 @@ class MetricLogger(ABC):
                             subtree_reduce=child_node.subtree_reduce,
                         )
                         child_node[dynamic_id] = runtime_node
-                        self._refs.update(refs)
 
+                        self._refs.update(refs)
                     elif not isinstance(runtime_node, Node):
                         raise TypeError(
                             f"Expected runtime Node at {runtime_path}, got "
                             f"{type(runtime_node).__name__}."
                         )
-
                     elif runtime_node.schema is not runtime_schema:
                         raise TypeError(
                             f"Runtime schema changed at {runtime_path}: "
@@ -320,6 +401,7 @@ class MetricLogger(ABC):
                 raise TypeError(
                     f"Expected Metric at {path}, got {type(child_node).__name__}."
                 )
+
             child_node.push(value)
 
     def push(self, key: Path, value: Any) -> None:
@@ -327,8 +409,10 @@ class MetricLogger(ABC):
         """Logs a new value or item under a (strictly existing) path to the logger"""
 
         metric = self._refs.get(key)
+
         if metric is None:
             metric = self._resolve_path(path=key, node=self._tree, index=0, prefix=())
+
         metric.push(value)
 
     def peek_value(self, key: Path) -> Any:
@@ -337,9 +421,12 @@ class MetricLogger(ABC):
         """
         Reads a metric value given its path without destructively reducing it
         """
+
         metric = self._refs.get(key)
+
         if metric is None:
             raise KeyError(f"Unknown logger path: {key}")
+
         return metric.peek()
 
     def peek(self) -> MetricSchema:
@@ -360,6 +447,7 @@ class MetricLogger(ABC):
             _peek,
             self._tree,
         )
+
         return self._tree.construct(peeked)
 
     def reduce(self) -> MetricSchema:
@@ -370,6 +458,7 @@ class MetricLogger(ABC):
         def _reduce(path: Path, metric: Metric):
             try:
                 return metric.reduce(compile=True)
+
             # TODO custom exceptions
             except Exception as e:
                 raise ValueError(
@@ -380,21 +469,25 @@ class MetricLogger(ABC):
             _reduce,
             self._tree,
         )
+
         return self._tree.construct(reduced)
 
     def compile(self) -> dict:
         """
         Compiles all current values and throughputs into a single dictionary.
         """
+
         return self.reduce().model_dump(serialize_as_any=True)
 
     def reset(self) -> None:
         """
         Resets all data stored in this MetricLogger.
         """
+
         for path, metric in self._refs.items():
             try:
                 metric.flush()
+
             # TODO custom exceptions
             except Exception as e:
                 raise ValueError(
@@ -405,6 +498,7 @@ class MetricLogger(ABC):
         """
         Flush all accumulated values for the metric at `key`.
         """
+
         metric = self._refs.get(key)
 
         if metric is None:
