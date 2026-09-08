@@ -1,3 +1,11 @@
+"""Environment-level metric schemas.
+
+``AgentEnvStepSchema`` holds what is logged per agent at each step;
+``EpisodeRolloutSchema`` holds episode-level statistics plus the ``by_agent``
+dynamic node. Benchmarks subclass both to add their own fields (see
+``examples/bilevel_fishery/metric_schema.py``).
+"""
+
 from typing import Optional, TypeAlias
 
 from pydantic import Field
@@ -55,7 +63,6 @@ class AgentEnvStepSchema(MetricSchema):
         default=None,
         json_schema_extra={"reduce": ReduceProtocol.MEAN},
     )
-
     violation_signal: Optional[float] = Field(
         default=None,
         json_schema_extra={"reduce": ReduceProtocol.MEAN},
@@ -84,6 +91,7 @@ class EpisodeRolloutSchema(
         default=None,
         json_schema_extra={"reduce": ReduceProtocol.LAST},
     )
+
     # Reward (R) statistics
     reward_total: Optional[float] = Field(
         default=None, json_schema_extra={"reduce": ReduceProtocol.SUM}
@@ -100,10 +108,10 @@ class EpisodeRolloutSchema(
     reward_terminal: Optional[float] = Field(
         default=None, json_schema_extra={"reduce": ReduceProtocol.LAST}
     )
+
     # Value (V) statistics
     value_terminal: Optional[float] = None
     value_penultimate: Optional[float] = None
-
     episode_len_mean: Optional[float] = Field(
         default=None, json_schema_extra={"reduce": ReduceProtocol.MEAN}
     )
