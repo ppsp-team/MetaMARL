@@ -30,6 +30,7 @@ wheels/
 *.csv
 *.geojson
 *.nc
+*.env
 
 # Virtual environments
 .venv/
