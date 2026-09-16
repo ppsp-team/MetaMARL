@@ -629,6 +629,7 @@ class WaterRegulatedEdHsEnv(MultiAgentRegulatedEnv):
 
         return n_days
 
+    # TODO variable start date
     def _patch_raven_end_date(self, run_dir: str, date: datetime) -> None:
         rvi_path = Path(run_dir) / "2_Raven" / "ohms_canshield.rvi"
 
