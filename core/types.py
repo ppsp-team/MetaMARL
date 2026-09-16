@@ -1,3 +1,11 @@
+"""Type aliases shared across the framework.
+
+The aliases name the identifiers that flow between the ``World``, the
+optimizers and the environments (``ContextID``, ``OptimizerID``) and the
+container types exchanged with RLlib (``EnvType``, ``EnvConfigDict``). They
+carry no runtime behaviour.
+"""
+
 from typing import TypeAlias, Union
 
 from gymnasium import Env

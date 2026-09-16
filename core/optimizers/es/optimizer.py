@@ -1,3 +1,22 @@
+"""Evolution Strategies over mechanism parameters in ``[0, 1]^d``.
+
+The optimizer keeps a search distribution over the normalized mechanism
+vector: a mean in ``(0, 1)^d`` handled in logit space (so candidates never
+leave the unit cube) and a scalar standard deviation ``sigma``. Each
+generation samples an antithetic population, asks the ``RegulatorEnv`` for one
+fitness per candidate and moves the mean along the fitness-weighted noise
+directions (natural evolution strategies estimator of Salimans et al., 2017,
+https://arxiv.org/abs/1703.03864). ``sigma`` expands after a worse generation
+and contracts after a better one.
+
+Three regimes share the same ``run()``:
+
+- population mode (``batch_capacity >= 2``): antithetic ES update;
+- single-candidate mode (``batch_capacity == 1``): sequential (1+1)-ES;
+- fixed mode (``dimension == 0``): no parameters, the fixed mechanism is
+  simply evaluated and reported.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -15,9 +34,7 @@ from core.optimizers.es.schema import ESCandidateSchema, ESParameterSchema, ESSc
 if TYPE_CHECKING:
     from core.optimizers.es.config import ESConfig
 
-
 logger = logging.getLogger(__name__)
-
 EPS = 1e-8
 
 # Ignore changes smaller than this relative scale when deciding whether
@@ -26,6 +43,46 @@ SIGMA_PERFORMANCE_REL_TOL = 1e-3
 
 
 class ESOptimizer(Optimizer):
+    """Outer optimizer searching the normalized mechanism vector by Evolution Strategies.
+
+    The state is a mean in ``(0, 1)^dimension`` (moved in logit space) and a
+    scalar ``sigma``. Each :meth:`run` call is one generation: sample the
+    population, step the regulator environment with it (which trains the
+    inner learner against every candidate and returns one fitness each),
+    update the mean and ``sigma``, log an ``ESSchema`` payload. Population
+    size comes from :attr:`batch_capacity`, which ``BilevelConfig`` sets to
+    the inner optimizer's capacity.
+
+    When to use: the mechanism has a handful of continuous parameters and the
+    fitness is a noisy black box (an inner RL run), which is exactly where
+    gradient-free ES is at home. See the module docstring for the three
+    regimes (population, single-candidate, fixed).
+
+    Parameters
+    ----------
+    config : ESConfig
+        Hyperparameters (``sigma``, ``mean_lr``, sigma adaptation, bounds,
+        convergence criterion, ``initial_mean``) and ``dimension``;
+        ``config.base_seed`` seeds the generator.
+
+    Raises
+    ------
+    ValueError
+        On a negative dimension, a non-positive ``mean_lr``, a negative
+        ``sigma_lr``, a ``sigma_decay`` outside ``(0, 1]``, inconsistent
+        sigma bounds, or an ``initial_mean`` of the wrong shape or outside
+        ``[0, 1]``.
+
+    Examples
+    --------
+    >>> cfg = ESConfig().training(sigma=0.15, mean_lr=0.1)
+    >>> cfg.dimension = 2
+    >>> opt = ESOptimizer(cfg)
+    >>> opt.batch_capacity = 4
+    >>> opt.mean.tolist()
+    [0.5, 0.5]
+    """
+
     def __init__(
         self,
         config: ESConfig,
@@ -35,7 +92,6 @@ class ESOptimizer(Optimizer):
         # --- Hyperparameters ---
         self.dimension = config.dimension
         self.mean_lr = config.mean_lr
-
         self.sigma_lr = float(config.sigma_lr)
         self.sigma_decay = float(config.sigma_decay)
         self.min_sigma = float(config.min_sigma)
@@ -44,6 +100,7 @@ class ESOptimizer(Optimizer):
 
         if self.dimension < 0:
             raise ValueError("dimension must be non-negative")
+
         self.fixed_mode = self.dimension == 0
 
         if self.mean_lr <= 0.0:
@@ -112,13 +169,14 @@ class ESOptimizer(Optimizer):
         # This is explicitly the average fitness of the sampled population,
         # not the fitness of the distribution mean.
         self.previous_population_mean_fitness: float | None = None
-
         self.parameter_names = [f"parameter_{i}" for i in range(self.dimension)]
 
+        # Typed metric logger for one generation at a time (see ESSchema).
         self.logger = MetricLogger.from_schema(ESSchema)
 
     def _on_env_init(self, env: BaseEnv) -> None:
         mechanism_space: MechanismSpace = env.m_space
+
         self.parameter_names = list(mechanism_space.optimize_params)
 
         if len(self.parameter_names) != self.dimension:
@@ -130,10 +188,20 @@ class ESOptimizer(Optimizer):
 
     @property
     def batch_capacity(self) -> int:
+        """Population size: number of candidates evaluated per generation."""
+
         return self._batch_capacity
 
     @batch_capacity.setter
     def batch_capacity(self, value: int) -> None:
+        """Set the population size and select the matching regime.
+
+        ``dimension == 0`` accepts any positive value (fixed mode); ``1``
+        switches to sequential (1+1)-ES; otherwise the value must be even
+        unless ``break_symmetry`` is set, because the population is built
+        from mirrored noise pairs.
+        """
+
         if value <= 0:
             raise ValueError("population_size must be positive")
 
@@ -144,13 +212,16 @@ class ESOptimizer(Optimizer):
                 "[ES] Fixed-mechanism batch mode enabled | batch_capacity=%d",
                 value,
             )
+
             return
 
         if value == 1:
             self._batch_capacity = 1
+
             logger.info(
                 "[ES] Single-candidate mode enabled. Using sequential (1+1)-ES."
             )
+
             return
 
         if not self.break_symmetry and value % 2 != 0:
@@ -161,14 +232,12 @@ class ESOptimizer(Optimizer):
     @staticmethod
     def _sigmoid(values: np.ndarray) -> np.ndarray:
         """Numerically stable sigmoid."""
-        values = np.asarray(values, dtype=np.float64)
 
+        values = np.asarray(values, dtype=np.float64)
         output = np.empty_like(values, dtype=np.float64)
         positive = values >= 0.0
         negative = ~positive
-
         output[positive] = 1.0 / (1.0 + np.exp(-values[positive]))
-
         exp_values = np.exp(values[negative])
         output[negative] = exp_values / (1.0 + exp_values)
 
@@ -177,12 +246,14 @@ class ESOptimizer(Optimizer):
     @staticmethod
     def _logit(values: np.ndarray) -> np.ndarray:
         """Convert values in [0, 1] to finite logit coordinates."""
+
         eps_bound = 1e-6
         clipped = np.clip(
             np.asarray(values, dtype=np.float64),
             eps_bound,
             1.0 - eps_bound,
         )
+
         return np.log(clipped / (1.0 - clipped))
 
     def _sample_population(self) -> np.ndarray:
@@ -192,6 +263,7 @@ class ESOptimizer(Optimizer):
             Population with shape
             ``(batch_capacity, dimension)`` and values in ``(0, 1)``.
         """
+
         if self.fixed_mode:
             return np.empty(
                 (
@@ -206,7 +278,6 @@ class ESOptimizer(Optimizer):
 
         half_pop = self._batch_capacity // 2
         remaining = self._batch_capacity - (2 * half_pop)
-
         noise_half = self.rng.standard_normal(
             (half_pop, self.dimension),
             dtype=np.float32,
@@ -266,10 +337,12 @@ class ESOptimizer(Optimizer):
             One of ``"initialized"``, ``"contracted"``, ``"expanded"``,
             or ``"held"``.
         """
+
         previous = self.previous_population_mean_fitness
 
         if previous is None:
             self.previous_population_mean_fitness = generation_mean_fitness
+
             return "initialized"
 
         tolerance = SIGMA_PERFORMANCE_REL_TOL * max(
@@ -282,14 +355,12 @@ class ESOptimizer(Optimizer):
         # Convert the full decay factor into a learning-rate-controlled
         # multiplicative step. This is symmetric in log space.
         adaptation_factor = self.sigma_decay**self.sigma_lr
-
         old_sigma = self.sigma
 
         if improvement > tolerance:
             # Better population-level performance: exploit more.
             proposed_sigma = self.sigma * adaptation_factor
             action = "contracted"
-
         elif improvement < -tolerance:
             # Worse population-level performance: restore exploration.
             proposed_sigma = (
@@ -298,7 +369,6 @@ class ESOptimizer(Optimizer):
                 else self.max_sigma
             )
             action = "expanded"
-
         else:
             proposed_sigma = self.sigma
             action = "held"
@@ -347,7 +417,6 @@ class ESOptimizer(Optimizer):
             candidate,
             dtype=np.float32,
         ).reshape(self.dimension)
-
         fitness = float(fitness)
 
         if not np.isfinite(fitness):
@@ -358,7 +427,6 @@ class ESOptimizer(Optimizer):
             self.mean = candidate.copy()
             self.fitness_baseline = fitness
             self.previous_population_mean_fitness = fitness
-
             self.best_fitness = fitness
             self.best_candidate = candidate.copy()
             self.best_mechanism_idx = 0
@@ -368,14 +436,12 @@ class ESOptimizer(Optimizer):
                 candidate.tolist(),
                 fitness,
             )
+
             return
 
         parent_fitness = float(self.fitness_baseline)
-
         improvement = fitness - parent_fitness
-
         accepted = fitness > parent_fitness
-
         old_mean = self.mean.copy()
         old_sigma = float(self.sigma)
 
@@ -472,10 +538,8 @@ class ESOptimizer(Optimizer):
                 )
 
             generation_mean_fitness = float(np.mean(fitness_scores_array))
-
             best_idx = int(np.argmax(fitness_scores_array))
             best_fitness = float(fitness_scores_array[best_idx])
-
             self.fitness_baseline = generation_mean_fitness
             self.previous_population_mean_fitness = generation_mean_fitness
 
@@ -497,6 +561,7 @@ class ESOptimizer(Optimizer):
                 float(np.min(fitness_scores_array)),
                 float(np.max(fitness_scores_array)),
             )
+
             return
 
         generation_mean_fitness = float(np.mean(fitness_scores_array))
@@ -507,8 +572,8 @@ class ESOptimizer(Optimizer):
                 candidate=population[0],
                 fitness=float(fitness_scores_array[0]),
             )
-            return
 
+            return
         else:
             fitness_mean = float(np.mean(normalized_fitness))
             fitness_std = float(np.std(normalized_fitness))
@@ -527,10 +592,8 @@ class ESOptimizer(Optimizer):
         # Reconstruct the standardized perturbations used to generate
         # the candidates.
         eps_est = (population_logit - mean_logit[None, :]) / (self.sigma + EPS)
-
         population_size = len(normalized_fitness)
         half = population_size // 2
-
         strict_antithetic = (
             not self.break_symmetry and population_size % 2 == 0 and half > 0
         )
@@ -539,12 +602,10 @@ class ESOptimizer(Optimizer):
             fitness_positive = normalized_fitness[:half]
             fitness_negative = normalized_fitness[half : 2 * half]
             epsilon_positive = eps_est[:half]
-
             gradient = np.mean(
                 (fitness_positive - fitness_negative)[:, None] * epsilon_positive,
                 axis=0,
             ) / (2.0 * self.sigma + EPS)
-
         else:
             gradient = np.mean(
                 normalized_fitness[:, None] * eps_est,
@@ -555,8 +616,8 @@ class ESOptimizer(Optimizer):
             gradient,
             dtype=np.float64,
         )
-
         grad_norm = float(np.linalg.norm(gradient))
+
         if grad_norm > 5.0:
             gradient *= 5.0 / (grad_norm + EPS)
 
@@ -595,6 +656,7 @@ class ESOptimizer(Optimizer):
         sigma: float,
     ) -> ESSchema:
         """Convert one completed ES generation to its metric schema."""
+
         if self.fixed_mode:
             mechanism = self.env.m_space.default()
             parameter_names = mechanism.param_names()
@@ -611,6 +673,7 @@ class ESOptimizer(Optimizer):
             logged_population = population
             logged_mean = mean
             logged_best = self.best_candidate
+
         best_idx = int(np.argmax(fitness))
 
         return ESSchema(
@@ -650,10 +713,37 @@ class ESOptimizer(Optimizer):
                 )
                 for parameter_idx, parameter_name in enumerate(parameter_names)
             },
+            generation_best={
+                parameter_name: ESParameterSchema(
+                    value=float(logged_population[best_idx, parameter_idx])
+                )
+                for parameter_idx, parameter_name in enumerate(parameter_names)
+            },
             inner=inner,
         )
 
     def run(self) -> dict[str, Any]:
+        """Run one generation and return its summary.
+
+        Samples the population, calls ``self.env.step(population)`` and reads
+        the fitness array (shape ``(batch_capacity,)``), appends the pair to
+        ``population_history``, applies the mean and sigma update, pushes the
+        generation's ``ESSchema`` payload to the logger and reports it.
+
+        Returns
+        -------
+        dict
+            ``best_fitness`` (best value seen so far) and
+            ``population_history``. An empty fitness array skips the update
+            and adds ``converged=False``.
+
+        Raises
+        ------
+        RuntimeError
+            If no environment is attached, a fitness is non-finite, or the
+            number of fitness values does not match the population size.
+        """
+
         logger.info(
             "[ES] Generation started | gen=%d | sigma=%.5f | mean_norm=%.4f",
             self.generation,
@@ -666,9 +756,7 @@ class ESOptimizer(Optimizer):
 
         pre_update_mean = self.mean.copy()
         pre_update_sigma = float(self.sigma)
-
         population = self._sample_population()
-
         _, fitness, _, _, info = self.env.step(population)
         fitness = np.asarray(
             fitness,
@@ -677,6 +765,7 @@ class ESOptimizer(Optimizer):
 
         if fitness.size == 0:
             logger.warning("[ES] No fitness returned; skipping update")
+
             return {
                 "converged": False,
                 "best_fitness": self.best_fitness,
@@ -685,6 +774,7 @@ class ESOptimizer(Optimizer):
 
         if not np.all(np.isfinite(fitness)):
             invalid_indices = np.flatnonzero(~np.isfinite(fitness)).tolist()
+
             raise RuntimeError(
                 f"Non-finite fitness detected at indices {invalid_indices}"
             )
@@ -715,12 +805,10 @@ class ESOptimizer(Optimizer):
             population.tolist(),
             fitness.tolist(),
         )
-
         self._update_parameters(
             population,
             fitness,
         )
-
         logger.info(
             "[ES] AFTER UPDATE | gen=%d | mean=%s | sigma=%.5f | best=%.5f",
             self.generation,
@@ -730,9 +818,8 @@ class ESOptimizer(Optimizer):
         )
 
         self.generation += 1
-
         metrics = self._to_logger_payload(
-            inner=info["metrics"],
+            inner=info.get("metrics") if isinstance(info, dict) else None,
             population=population,
             fitness=fitness,
             mean=pre_update_mean,
@@ -740,9 +827,7 @@ class ESOptimizer(Optimizer):
         )
 
         self.logger.push_data(metrics)
-        metrics = self.logger.peek()
-        self.reporting.report(metrics)
-
+        self.report_metrics()
         logger.info(
             "[ES] gen=%d | best=%.4f | mean=%.4f+/-%.4f | var=%.4f | sigma=%.4f",
             self.generation,

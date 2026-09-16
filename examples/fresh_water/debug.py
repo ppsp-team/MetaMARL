@@ -3,14 +3,12 @@ import ray
 from gymnasium import spaces
 
 from core.callbacks import tag_episode_with_env_idx
+from core.optimizers.appo.config import APPOptimizerConfig
 from core.optimizers.bilevel import BilevelConfig
 from core.optimizers.es.config import ESConfig
-from core.optimizers.appo.config import APPOptimizerConfig
-
 from examples.fresh_water.mechanism import WaterMechanismSpace
 from examples.fresh_water.regulated_env_ed_hs_v4 import WaterRegulatedEdHsEnv
 from examples.fresh_water.regulator_env_raven import WaterRegulatorRavenEnv
-
 
 ray.shutdown()
 
@@ -92,7 +90,6 @@ bilevel_opt_cfg: BilevelConfig = (
             env_config={
                 "ecology_cfg": {
                     "max_farm_area_m2": 1_000_000.0,
-
                     # TODO move this to Raven helper
                     "full_stage_m": 420.41,
                     "max_depth_m": 11.0,
@@ -157,8 +154,7 @@ bilevel_opt_cfg: BilevelConfig = (
                     "observation_space": spaces.Box(
                         low=-np.inf,
                         high=np.inf,
-                        shape=(4 + WaterMechanismSpace().full_dimension,
-                        ),
+                        shape=(4 + WaterMechanismSpace().full_dimension,),
                         dtype=np.float32,
                     ),
                     "action_space": spaces.Box(
@@ -211,6 +207,6 @@ bilevel_opt_cfg: BilevelConfig = (
 )
 
 bilevel_opt = bilevel_opt_cfg.build_optimizer()
-bilevel_opt.run()
 
+bilevel_opt.run()
 ray.shutdown()

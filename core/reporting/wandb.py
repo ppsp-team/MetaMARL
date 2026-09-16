@@ -1,3 +1,11 @@
+"""Weights & Biases reporter: one Plotly figure per query, logged to a run.
+
+A :class:`Query` with a ``color`` path is drawn as a marker-only scatter whose
+points are coloured on a shared Viridis colour axis; a
+:class:`ParallelCoordinatesQuery` becomes a ``go.Parcoords`` trace with one
+axis per table column and lines coloured by the table colour.
+"""
+
 from __future__ import annotations
 
 import uuid
@@ -26,8 +34,8 @@ class WandbConfig(ReporterConfig):
         quiet: Optional[bool] = True,
         max_end_of_run_summary_metrics: Optional[int] = 0,
         max_end_of_run_history_metrics: Optional[int] = 0,
-        **kwargs,
-    ):
+        **kwargs: Any,
+    ) -> None:
         super().__init__(project=project)
 
         self.settings = {
@@ -39,6 +47,8 @@ class WandbConfig(ReporterConfig):
         }
 
     def build(self, *, label: Optional[str] = None) -> WandbReporter:
+        """Create a :class:`WandbReporter` with a fresh random run id, grouped by world."""
+
         name = f"{self.world}-{label}" if label is not None else self.world
 
         return WandbReporter(
@@ -55,11 +65,10 @@ class WandbConfig(ReporterConfig):
 
 
 class WandbReporter(Reporter):
-    """
-    Ray actor that owns a single W&B run.
+    """Reporter rendering each query as a Plotly figure logged to one W&B run.
 
-    Other actors/processes should never receive the raw wandb.Run object.
-    They only send serializable payloads to this actor.
+    The run is created lazily on the first ``report`` call so that building
+    a reporter never touches the network.
     """
 
     def __init__(
@@ -359,6 +368,8 @@ class WandbReporter(Reporter):
         )
 
     def close(self) -> None:
+        """Finish the W&B run if one was started; a later ``report`` calls ``wandb.init`` again."""
+
         if self._run is not None:
             self._run.finish()
 

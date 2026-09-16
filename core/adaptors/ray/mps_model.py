@@ -30,7 +30,9 @@ class MPSFullyConnectedNetwork(TorchModelV2, torch.nn.Module):
         self._base_model = FullyConnectedNetwork(
             obs_space, action_space, num_outputs, model_config, name + "_base"
         )
+
         self._base_model.to(self.device)
+
         self._last_value = None
 
     @override(TorchModelV2)
@@ -40,13 +42,34 @@ class MPSFullyConnectedNetwork(TorchModelV2, torch.nn.Module):
         state: list[TensorType],
         seq_lens: TensorType,
     ) -> tuple[TensorType, list[TensorType]]:
+        """Run the wrapped fully connected network on the MPS device.
+
+        Parameters
+        ----------
+        input_dict : dict[str, TensorType]
+            RLlib input dict; ``"obs"`` is converted to a tensor if needed and
+            copied to ``self.device``, and ``"obs_flat"`` is set to the same
+            tensor because ``FullyConnectedNetwork`` reads that key.
+        state : list[TensorType]
+            RNN state (unused by the FC net, passed through).
+        seq_lens : TensorType
+            Sequence lengths (passed through).
+
+        Returns
+        -------
+        tuple[TensorType, list[TensorType]]
+            ``(logits, new_state)`` with logits moved back to CPU, since the
+            rest of the RLlib pipeline runs there. The value branch output is
+            cached for ``value_function``.
+        """
+
         obs = input_dict["obs"]
+
         if not isinstance(obs, torch.Tensor):
             obs = torch.as_tensor(obs)
 
         obs_mps = obs.to(self.device)
         input_dict_mps = {**input_dict, "obs": obs_mps, "obs_flat": obs_mps}
-
         output, new_state = self._base_model(input_dict_mps, state, seq_lens)
 
         # Cache value for value_function() call
@@ -57,6 +80,20 @@ class MPSFullyConnectedNetwork(TorchModelV2, torch.nn.Module):
 
     @override(TorchModelV2)
     def value_function(self) -> TensorType:
+        """Return the value estimate cached by the last ``forward`` call.
+
+        Returns
+        -------
+        TensorType
+            Value tensor of shape ``[B]`` moved to CPU.
+
+        Raises
+        ------
+        ValueError
+            If ``forward`` has not been called yet.
+        """
+
         if self._last_value is None:
             raise ValueError("forward() must be called before value_function()")
+
         return self._last_value.cpu()

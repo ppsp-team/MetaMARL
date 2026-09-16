@@ -1,3 +1,12 @@
+"""Regulator environment of the fishery example: scores mechanism candidates.
+
+``FisheryRegulatorEnv`` is the environment the ES outer optimizer steps. A
+step publishes the population of candidate mechanisms, runs the inner
+optimizer (handled by the ``RegulatorEnv`` base class) and, in
+:meth:`FisheryRegulatorEnv.aggregate_rewards`, turns the inner rollouts into
+one fitness per candidate through a ``FitnessContext``.
+"""
+
 import logging
 from collections import defaultdict
 from typing import Any
@@ -18,14 +27,21 @@ logger = logging.getLogger(__name__)
 
 
 class FisheryRegulatorEnv(RegulatorEnv):
-    """
-    Outer-loop environment for fishery mechanism optimization.
+    """Outer-loop environment that scores fishery mechanism candidates.
 
-    Responsibilities:
-      - Publish candidate mechanisms
-      - Run inner PPO optimizer
-      - Collect performance metrics
-      - Convert to scalar ES reward
+    The fitness of a candidate is computed on the last ``fitness_tail_steps``
+    steps of each inner episode (tail averaging), on the ``train`` or ``eval``
+    split selected by ``aggregation_status``.
+
+    Parameters
+    ----------
+    ecology_cfg : dict
+        ``sustainability_weight`` (weight of the mean normalized biomass in
+        the objective, default 5.0), ``sustainability_threshold`` (normalized
+        biomass below which a step counts as collapsed, default 0.1), ``K``
+        (carrying capacity, biomass units, used to denormalize the threshold
+        for plots), ``aggregation_status`` (``"train"`` or ``"eval"``, default
+        ``"eval"``) and ``fitness_tail_steps`` (default 50).
     """
 
     def __init__(
@@ -35,14 +51,15 @@ class FisheryRegulatorEnv(RegulatorEnv):
         **kwargs,
     ):
         super().__init__(**kwargs)
+
         self.sustainability_weight = ecology_cfg.get("sustainability_weight", 5.0)
         self.sustainability_threshold = ecology_cfg.get("sustainability_threshold", 0.1)
         self.K = ecology_cfg.get("K")
+
         # Denormalized threshold for visualization
         self.raw_sustainability_threshold = self.sustainability_threshold * self.K
         self.trajectories: dict[int, list[dict[str, Any]]] = {}
         self.last_metrics: list[dict[str, float]] = []
-
         target_status = ecology_cfg.get("aggregation_status", "eval")
         self.aggregation_status = MechanismStatus(target_status)
 
@@ -51,19 +68,19 @@ class FisheryRegulatorEnv(RegulatorEnv):
 
     @override(RegulatorEnv)
     def observation(self, obs: ObsType) -> ObsType:
+        """Return a constant ``0.0``: the ES outer loop is stateless and ignores observations."""
+
         return 0.0
 
     @override(RegulatorEnv)
     def aggregate_rewards(self, metrics: MetricSchema) -> list[float]:
-        """
-        Compute per-mechanism fitness from step-level EnvStepContexts.
+        """Compute one fitness per candidate from the inner optimizer's metrics.
 
-        Semantics:
-        - Group contexts by mechanism
-        - Segment into episodes of length = horizon
-        - Drop incomplete episodes
-        - Compute episode-level metrics
-        - Aggregate exactly like legacy evaluator
+        ``metrics`` is the inner ``RaySchema`` peeked after training; the
+        ``aggregation_status`` split (``train`` or ``eval``) is read, then the
+        rollouts are walked by mechanism, seed and episode. Each episode
+        contributes its tail-averaged reward, biomass and harvest statistics;
+        seeds are averaged per mechanism and folded into a ``FitnessContext``.
         """
 
         # TODO move num_steps here
@@ -71,8 +88,10 @@ class FisheryRegulatorEnv(RegulatorEnv):
         metrics = getattr(metrics, self.aggregation_status.value)
 
         per_mech_metrics: list[dict[str, float]] = []
+
         # TODO when running parallel eval, async may duplicate runs ! should not statistically change the result
         metrics_by_mechanism: dict[int, list[dict[str, Any]]] = defaultdict(list)
+
         self.trajectories = {}
 
         # TODO ensure aggregation by policy seed
@@ -88,7 +107,9 @@ class FisheryRegulatorEnv(RegulatorEnv):
                         np.asarray(episode_metrics.reward_mean, dtype=np.float32)
                     )
                     fish = np.atleast_1d(
-                        np.asarray(episode_metrics.fish_norm_next_mean, dtype=np.float32)
+                        np.asarray(
+                            episode_metrics.fish_norm_next_mean, dtype=np.float32
+                        )
                     )
                     realized_harvest = np.atleast_1d(
                         np.asarray(episode_metrics.H_realized, dtype=np.float32)
@@ -102,7 +123,6 @@ class FisheryRegulatorEnv(RegulatorEnv):
                         (self.sustainability_threshold - fish)
                         / max(1e-6, self.sustainability_threshold),
                     )
-
                     num_steps = len(fish)
                     tail_steps = min(self.fitness_tail_steps, num_steps)
                     tail_start = num_steps - tail_steps
@@ -115,6 +135,7 @@ class FisheryRegulatorEnv(RegulatorEnv):
                         (self.sustainability_threshold - tail_fish)
                         / max(1e-6, self.sustainability_threshold),
                     )
+
                     metrics_by_mechanism[idx].append(
                         {
                             "seed": seed,
@@ -145,7 +166,6 @@ class FisheryRegulatorEnv(RegulatorEnv):
             mean_realized_harvest = float(
                 np.mean([m["mean_realized_harvest"] for m in seed_metrics])
             )
-
             harvest_score = float(np.mean([m["harvest_score"] for m in seed_metrics]))
             collapse_rate = float(np.mean([m["collapse_rate"] for m in seed_metrics]))
             sustainability_penalty = float(
@@ -154,7 +174,6 @@ class FisheryRegulatorEnv(RegulatorEnv):
             min_fish = float(np.mean([m["min_fish"] for m in seed_metrics]))
             mean_fish = float(np.mean([m["mean_fish"] for m in seed_metrics]))
             mean_fines = float(np.mean([m["mean_fines"] for m in seed_metrics]))
-
             fitness_ctx = FitnessContext.from_metrics(
                 mean_reward=mean_reward,
                 collapse_rate=collapse_rate,
@@ -166,7 +185,6 @@ class FisheryRegulatorEnv(RegulatorEnv):
                 mean_realized_harvest=mean_realized_harvest,
                 harvest_score=harvest_score,
             )
-
             objective = float(fitness_ctx.objective_score)
             fitness[idx] = objective
 
@@ -180,7 +198,6 @@ class FisheryRegulatorEnv(RegulatorEnv):
                     metrics=fitness_ctx,
                 )
             )
-
             per_mech_metrics.append(
                 {
                     "idx": idx,
@@ -205,10 +222,8 @@ class FisheryRegulatorEnv(RegulatorEnv):
             [m["collapse_rate"] for m in per_mech_metrics],
             dtype=np.float32,
         )
-
         best_position = int(np.argmax(objectives))
         worst_position = int(np.argmin(objectives))
-
         best = per_mech_metrics[best_position]
         worst = per_mech_metrics[worst_position]
 

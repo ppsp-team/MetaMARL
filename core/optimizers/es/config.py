@@ -1,4 +1,6 @@
-from typing import Optional, Self
+"""Hyperparameters of the Evolution Strategies outer optimizer."""
+
+from typing import Any, Optional, Self
 
 from core.annotations import override
 from core.optimizers.config import OptimizerConfig
@@ -6,6 +8,13 @@ from core.optimizers.es.optimizer import ESOptimizer
 
 
 class ESConfig(OptimizerConfig):
+    """Configuration of :class:`~core.optimizers.es.optimizer.ESOptimizer`.
+
+    The search dimension (``dimension``) and the population size are not set
+    here: ``BilevelConfig`` derives them from the mechanism space and from
+    the inner optimizer's batch capacity.
+    """
+
     def __init__(self, opt_class=None):
         super().__init__(opt_class=opt_class or ESOptimizer)
 
@@ -19,7 +28,6 @@ class ESConfig(OptimizerConfig):
         self.min_sigma: float = 1e-3
         self.max_sigma: float = 0.5
         self.break_symmetry: bool = False
-
         self.convergence_eps: float = 1e-4
         self.convergence_patience: int = 10
         self.initial_mean: Optional[list[float]] = None
@@ -39,46 +47,67 @@ class ESConfig(OptimizerConfig):
         convergence_eps: Optional[float] = None,
         convergence_patience: Optional[int] = None,
         initial_mean: Optional[list[float]] = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> Self:
-        """Sets the training related configs for Evolution Strategies (ES).
+        """Set the ES search hyperparameters. Unset arguments keep their current value.
 
-        Args:
-            pop_size: Number of candidate solutions sampled per ES generation. Larger population
-                provide more stable gradient estimates at the cost of increased computation.
-            sigma: Initial standard deviation (std) of the search distribution.
-            mean_lr: Learning rate for updating the mean of the search distribution which sets
-                how aggressively the optimizer shifts the center of the distribution towards
-                higer performing candidates.
-            min_sigma: Lower bound on the std. Prevents premature convergence by ensuring a min
-                level of exploration is maintained.
-            max_sigma: Upper bound on the std. Prevents excessive large exploration steps that
-                can destabilize training.
+        Parameters
+        ----------
+        sigma : float
+            Initial standard deviation of the search distribution in logit space.
+        mean_lr : float
+            Step size applied to the estimated gradient when moving the mean.
+        sigma_lr : float
+            Strength of the sigma adaptation (``0`` disables it).
+        sigma_decay : float
+            Base multiplicative factor of the sigma adaptation, in ``(0, 1]``.
+        min_sigma, max_sigma : float
+            Bounds of sigma: a floor keeps exploring, a ceiling avoids
+            destabilizing jumps.
+        break_symmetry : bool
+            Replace one mirrored sample by an independent one so the population
+            is not strictly antithetic (allows odd population sizes).
+        convergence_eps, convergence_patience : float, int
+            Convergence criterion on the mean displacement.
+        initial_mean : list[float], optional
+            Starting point in ``[0, 1]^dimension`` (default ``0.5`` everywhere).
 
-        Returns:
-            This updated OptimizerConfig object.
+        Returns
+        -------
+        ESConfig
+            ``self``, for chaining.
         """
 
         if sigma is not None:
             self.sigma = sigma
+
         if mean_lr is not None:
             self.mean_lr = mean_lr
+
         if sigma_lr is not None:
             self.sigma_lr = sigma_lr
+
         if sigma_decay is not None:
             self.sigma_decay = sigma_decay
+
         if min_sigma is not None:
             self.min_sigma = min_sigma
+
         if max_sigma is not None:
             self.max_sigma = max_sigma
+
         if generation is not None:
             self.generation = generation
+
         if break_symmetry is not None:
             self.break_symmetry = break_symmetry
+
         if convergence_eps is not None:
             self.convergence_eps = convergence_eps
+
         if convergence_patience is not None:
             self.convergence_patience = convergence_patience
+
         if initial_mean is not None:
             self.initial_mean = initial_mean
 
