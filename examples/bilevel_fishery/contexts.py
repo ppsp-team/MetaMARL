@@ -1,21 +1,29 @@
-from typing import SupportsFloat
+"""Context records exchanged between the fishery levels through the World actor.
+``FitnessContext`` is what the regulator environment publishes for each
+mechanism candidate once the inner rollouts have been aggregated: the scalar
+objective the ES maximizes plus the summary statistics it was computed from.
+"""
 
-import numpy as np
+from typing import SupportsFloat
 
 from core.world.context import ContextSchema
 
 
 class FitnessContext(ContextSchema):
-    """
-    Fitness signal produced by inner optimizer after evaluation.
+    """Fitness of one mechanism candidate, the sole scalar feedback of the bilevel loop.
 
-    Published by:
-        inner optimizer (PPO)
-
-    Consumed by:
-        regulator environment (ES outer loop)
-
-    This is the *sole* scalar feedback channel for bilevel optimization.
+    Built by ``FisheryRegulatorEnv.aggregate_rewards`` from the inner
+    optimizer's evaluation rollouts and consumed by the ES outer loop.
+    ``objective_score`` is ``harvest_score + sustainability_weight *
+    mean_fish``. ``mean_reward`` is the tail-averaged per-step reward
+    (delivered harvest fraction, dimensionless); ``collapse_rate`` the
+    fraction of tail steps with normalized biomass below the sustainability
+    threshold; ``sustainability_penalty`` the mean relative shortfall below
+    that threshold; ``total_fines`` the fines paid (reward units);
+    ``mean_fish`` and ``min_fish`` the mean and minimum normalized biomass
+    (fraction of the carrying capacity ``K``); ``mean_realized_harvest`` the
+    mean realized total harvest (biomass units); ``harvest_score`` the mean
+    realized harvest divided by the maximum sustainable yield.
     """
 
     objective_score: float
@@ -42,13 +50,18 @@ class FitnessContext(ContextSchema):
         mean_realized_harvest: SupportsFloat = 0.0,
         harvest_score: SupportsFloat = 0.0,
     ) -> "FitnessContext":
+        """Build the context and compute ``objective_score`` from the statistics.
+
+        The objective is ``harvest_score + sustainability_weight * mean_fish``;
+        ``mean_reward``, ``collapse_rate`` and ``sustainability_penalty`` are
+        stored for reporting but do not enter the objective.
         """
-        Construct fitness context from evaluation metrics.
-        """
-        # TODO 
+
+        # TODO
         # objective = mean_reward - sustainability_weight * (1.0 - mean_fish)
         # objective = harvest_score
         objective = harvest_score + sustainability_weight * mean_fish
+
         # objective = mean_fish
 
         # reward = float(mean_reward)

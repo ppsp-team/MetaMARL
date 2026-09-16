@@ -154,6 +154,7 @@ dependencies = [
     { name = "scipy" },
     { name = "seaborn" },
     { name = "sentencepiece" },
+    { name = "spacing" },
     { name = "torch" },
     { name = "transformers" },
     { name = "wandb" },
@@ -195,6 +196,7 @@ requires-dist = [
     { name = "scipy", specifier = ">=1.17.0" },
     { name = "seaborn", specifier = ">=0.13.2" },
     { name = "sentencepiece", specifier = ">=0.2.1" },
+    { name = "spacing", specifier = ">=1.0.3" },
     { name = "torch", specifier = ">=2.10.0" },
     { name = "transformers", specifier = ">=5.4.0" },
     { name = "wandb", specifier = ">=0.16,<1.0" },
@@ -1773,6 +1775,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/44/cd/a040c4b3119bbe532e5b0732286f805445375489fceaec1f48306068ee3b/smmap-5.0.2.tar.gz", hash = "sha256:26ea65a03958fa0c8a1c7e8c7a58fdc77221b8910f6be2131affade476898ad5", size = 22329, upload-time = "2025-01-02T07:14:40.909Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/04/be/d09147ad1ec7934636ad912901c5fd7667e1c858e19d355237db0d0cd5e4/smmap-5.0.2-py3-none-any.whl", hash = "sha256:b30115f0def7d7531d22a0fb6502488d879e75b260a9db4d0819cfb25403af5e", size = 24303, upload-time = "2025-01-02T07:14:38.724Z" },
+]
+
+[[package]]
+name = "spacing"
+version = "1.0.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/38/54/4e1b65ec57bb3ad513b337a2a69c7e89974973f3f5230ecf4b3b4e3cdfa4/spacing-1.0.3.tar.gz", hash = "sha256:58db84b470e5335588fe5d0e2e8175592f00ff6146dc44deced0871d25e3e549", size = 107545, upload-time = "2026-03-09T19:54:34.737Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f5/14/3cb59ab385b99e81b56ff93f17d848d221dfda4ec0cbe2d53a507930c3f2/spacing-1.0.3-py3-none-any.whl", hash = "sha256:8d749d07f3e5fc65375c4e0c5c4b8ed84b3a27d2ee08ceba528b459d81820dd4", size = 45772, upload-time = "2026-03-09T19:54:33.526Z" },
 ]
 
 [[package]]

@@ -30,6 +30,7 @@ wheels/
 *.csv
 *.geojson
 *.nc
+*.env
 
 # Virtual environments
 .venv/
@@ -92,6 +93,7 @@ figures/
 *.parquet
 
 # WandB
+wandb_analysis/
 wandb/
 
 # Ray
@@ -110,3 +112,6 @@ CLAUDE.md
 
 # GeoJSONs directory (project-specific large files)
 geojsons/
+
+!TODO.md
+!tutorials/*

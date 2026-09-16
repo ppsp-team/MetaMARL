@@ -1,0 +1,9 @@
+[blank_lines]
+default_between_different = 1
+consecutive_control = 1
+consecutive_definition = 1
+after_docstring = 1
+indent_width = 4
+
+[paths]
+exclude_names = ["legacy_code"]

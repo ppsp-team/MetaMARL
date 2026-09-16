@@ -8,8 +8,8 @@ from core.optimizers.es.config import ESConfig
 from core.optimizers.ppo.config import PPOptimizerConfig
 
 # Fishery-specific objects
-from examples.bilevel_fishery.mechanism import FisheryMechnanismSpace
-from examples.bilevel_fishery.regulated_env import FisheryRegulatedEnv
+from examples.bilevel_fishery.deprecated.mechanism import FisheryMechnanismSpace
+from examples.bilevel_fishery.deprecated.regulated_env import FisheryRegulatedEnv
 from examples.bilevel_fishery.regulator_env import FisheryRegulatorEnv
 
 # TODO the default mechanism config and fisherman, and observation spaces and action spaces part of config

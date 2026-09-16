@@ -1,13 +1,23 @@
+"""Abstract optimizer node of the bilevel optimisation graph.
+
+An ``Optimizer`` owns a frozen ``OptimizerConfig``, an optional environment,
+handles to the shared ``World`` and reporter actors, and upstream/downstream
+links to other optimizers. Concrete implementations (``RayOptimizer`` for the
+inner RL level, the ES optimizer for the outer regulator) implement ``run`` and
+optionally ``evaluate``, ``reset``, ``save`` and ``stop``.
+"""
+
 from abc import ABC, abstractmethod
-from logging import Logger
-from typing import Any, Callable, Optional
+from pathlib import Path
+from typing import Optional
 
+# TODO move ray dependencies out of ray optimizer
 from ray.actor import ActorHandle
-from ray.rllib.utils.metrics.metrics_logger import MetricsLogger
-
 from core.envs.base import BaseEnv
+from core.metrics.logger import MetricLogger
+from core.metrics.schemas import MetricSchema
 from core.optimizers.config import OptimizerConfig
-from core.reporting.wandb import WandbReporter
+from core.reporting.base import Reporter
 from core.types import OptimizerID
 from core.world.base import World
 
@@ -22,15 +32,12 @@ class Optimizer(ABC):
 
     # data owned by the optimizer
     config: OptimizerConfig
-
     opt_id: OptimizerID
-
-    metrics: Optional[MetricsLogger]
+    logger: MetricLogger
+    reporting: Reporter
 
     # TODO ability to save data offline
     # offline_data: Optional[OfflineData]
-
-    logger_creator: Optional[Callable[[], Logger]]
 
     # this is the default configuration as soon as an optimizer is created
 
@@ -38,17 +45,15 @@ class Optimizer(ABC):
         self,
         config: Optional[OptimizerConfig] = None,
         world: Optional[ActorHandle[World]] = None,
-        reporting: Optional[ActorHandle[WandbReporter]] = None,
-        # TODO
-        # logger_creator: Optional[Callable[[], Logger]] = None,
+        reporting: Optional[Reporter] = None,
         **kwargs,
     ):
         from core.optimizers.config import OptimizerConfig
 
         self.config: OptimizerConfig = config
-
         self.world = world  # TODO replace by envFactory
-        self.reporting = reporting
+        self.reporting: Optional[Reporter] = reporting
+        self.logger: Optional[MetricLogger] = None
 
         # Assigned by World or Orchestrator
         self.opt_id: OptimizerID | None = None
@@ -56,11 +61,6 @@ class Optimizer(ABC):
         # Optional environment (may be None for meta-optimizers)
         # TODO review
         self._env: BaseEnv | None = config.env
-
-        # Optional metrics hook
-        self.metrics: MetricsLogger = MetricsLogger(
-            root=True, stats_cls_lookup=config.stats_cls_lookup
-        )
 
         # Optimizer Graph connectivity
         self._downstream: set["Optimizer"] = set()
@@ -85,13 +85,23 @@ class Optimizer(ABC):
     # @reporting.setter
     # def world(self, reporting: ActorHandle[WandbReporter]) -> None:
     #     self._reporting = reporting
-    
+
     @property
     def env(self) -> BaseEnv | None:
+        """Environment attached to this optimizer.
+
+        Initialised from ``config.env`` (which may be an env *class* rather
+        than an instance) and replaced by ``OptimizerConfig.build_optimizer``
+        with the instantiated environment. ``None`` for optimizers that do
+        not step an environment themselves.
+        """
+
         return self._env
-    
+
     @env.setter
     def env(self, value: BaseEnv | None) -> None:
+        """Attach an environment and fire ``_on_env_init`` if it is not None."""
+
         self._env = value
 
         if value is not None:
@@ -99,28 +109,64 @@ class Optimizer(ABC):
 
     def _on_env_init(self, env: BaseEnv) -> None:
         """Hook called after a runtime env is attached"""
+
         pass
 
     @property
     def id(self) -> OptimizerID:
+        """Identifier assigned by the World, raising if not yet set.
+
+        Raises
+        ------
+        RuntimeError
+            If ``set_id`` has not been called.
+        """
+
         if self.opt_id is None:
             raise RuntimeError("Optimizer ID not set")
+
         return self.opt_id
 
     @property
     def batch_capacity(self) -> int:
+        """Number of candidates this optimizer can process per iteration.
+
+        The base class returns ``self._batch_capacity`` but never sets it, so
+        subclasses must either override the property (``RayOptimizer``) or
+        assign the attribute (the ES optimizer); otherwise ``AttributeError``
+        is raised. The bilevel driver copies the inner optimizer's capacity
+        onto the outer one to size the ES population.
+        """
+
         return self._batch_capacity
 
     # TODO make id immutable
     def set_id(self, id: OptimizerID) -> None:
+        """Assign the optimizer ID once.
+
+        Raises
+        ------
+        RuntimeError
+            If an ID is already set.
+        """
+
         if self.opt_id is not None:
             raise RuntimeError("Optimizer ID already set")
+
         self.opt_id = id
 
     def set_downstream(self, opt: "Optimizer") -> None:
+        """Register ``opt`` as a downstream (inner) optimizer of this one."""
+
         self._downstream.add(opt)
 
     def set_upstream(self, opt: "Optimizer") -> None:
+        """Register ``opt`` as an upstream (outer) optimizer of this one.
+
+        Kept for graph consistency checks and to let an inner optimizer reach
+        its parent; the core loop does not traverse ``_upstream``.
+        """
+
         # this is only for checking!
         # and also to call the upstream optimizer
         self._upstream.add(opt)
@@ -128,18 +174,49 @@ class Optimizer(ABC):
     @classmethod
     def from_config(cls, config: OptimizerConfig) -> "Optimizer":
         """Instantiate optimizer from config."""
+
         return cls(config=config)
 
     # TODO default config logic
     @classmethod
     def get_default_config(cls) -> OptimizerConfig:
-        """ """
+        """Return a default config; not provided by the base class."""
+
         raise NotImplementedError("Optimizers must define a default config explicitly")
 
     @classmethod
-    def from_checkpoint(cls, file_path: Any) -> "Optimizer":
+    def from_checkpoint(cls, file_path: Path) -> "Optimizer":
         """Restore optimizer from config."""
+
         raise NotImplementedError
+
+    def reduce_metrics(self) -> MetricSchema:
+        """
+        Destructively reduce and return all accumulated optimizer metrics.
+        """
+
+        if self.logger is None:
+            raise RuntimeError(f"{type(self).__name__} has no MetricLogger.")
+
+        return self.logger.reduce()
+
+    def flush_metrics(self) -> None:
+        """
+        Flush all accumulated optimizer metrics.
+        """
+
+        if self.logger is None:
+            return
+
+        self.logger.reset()
+
+    def report_metrics(self) -> None:
+        """Render every configured query against the accumulated metrics (non-destructive)."""
+
+        if self.logger is None or self.reporting is None:
+            return
+
+        self.reporting.report(self.logger.peek())
 
     # Accessors
     # def __getattribute__(self, name):
@@ -188,19 +265,25 @@ class Optimizer(ABC):
         >>>     world.update_context(ctx)
 
         """
+
         raise NotImplementedError
 
     def evaluate(self) -> None:
         """Evaluate Optimizer Performance"""
+
         pass
 
     def save(self) -> None:
         """Persist Optimizer State"""
+
         pass
 
     def reset(self) -> None:
         """Reset optimizer state (e.g., policy weights)."""
+
         pass
 
     def stop(self) -> None:
+        """Release resources held by the optimizer (no-op by default)."""
+
         pass
